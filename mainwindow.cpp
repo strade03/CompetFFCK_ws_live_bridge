@@ -10,6 +10,9 @@ MainWindow::MainWindow(QWidget *parent)
     m_bridge = new LiveBridge(this);
     m_isRunning = false;
     
+    // Rename the button
+    ui->btnRefreshCodex->setText("Lister Courses");
+    
     connect(m_bridge, &LiveBridge::logMessage, this, &MainWindow::appendLog);
 }
 
@@ -31,11 +34,15 @@ void MainWindow::on_btnStartStop_clicked()
         m_isRunning = false;
         setRunningState(false);
     } else {
-        QString codex = ui->cbCodex->currentText().trimmed();
-        if(codex.isEmpty()) {
-            QMessageBox::warning(this, "Erreur", "Veuillez sélectionner un Codex !");
+        // Extract Codex from the display text "FFCK20250553 | DES | C:1 | Nom..."
+        QString selected = ui->cbCodex->currentText().trimmed();
+        if (selected.isEmpty()) {
+            QMessageBox::warning(this, "Erreur", "Veuillez sélectionner une course !");
             return;
         }
+        
+        // The Codex is always the first part before " | "
+        QString codex = selected.split(" | ").first().trimmed();
 
         LiveBridge::Config cfg;
         cfg.dbHost = ui->leDbHost->text(); cfg.dbPort = ui->leDbPort->text().toInt();
@@ -46,6 +53,7 @@ void MainWindow::on_btnStartStop_clicked()
         cfg.keyRace = codex;
 
         ui->txtConsole->clear();
+        appendLog("Codex sélectionné: " + codex);
         if (m_bridge->start(cfg)) {
             m_isRunning = true;
             setRunningState(true);
@@ -63,6 +71,11 @@ void MainWindow::on_btnRefreshCodex_clicked()
     ui->cbCodex->clear();
     QStringList list = m_bridge->fetchCodex(cfg);
     ui->cbCodex->addItems(list);
+    
+    if (list.isEmpty())
+        appendLog("[INFO] Aucune course trouvée dans la base.");
+    else
+        appendLog(QString("[INFO] %1 course(s) trouvée(s).").arg(list.size()));
 }
 
 void MainWindow::setRunningState(bool running)

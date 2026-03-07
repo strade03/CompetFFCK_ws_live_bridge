@@ -111,18 +111,46 @@ QJsonObject LiveBridge::sqlTableToAdv(QSqlQuery& q, const QString& tableName) {
 
 QStringList LiveBridge::fetchCodex(const Config& cfg) {
     QStringList list;
-    QSqlDatabase db = QSqlDatabase::addDatabase("QMYSQL", "fetch_conn");
-    db.setHostName(cfg.dbHost); db.setPort(cfg.dbPort);
-    db.setUserName(cfg.dbUser); db.setPassword(cfg.dbPass); db.setDatabaseName(cfg.dbName);
-    if (db.open()) {
-        QSqlQuery q("SELECT DISTINCT Codex FROM Competition WHERE Codex IS NOT NULL AND Codex != '' ORDER BY Date_debut DESC, Code DESC LIMIT 50", db);
-        while (q.next()) {
-            QString codex = q.value(0).toString().trimmed();
-            if (!codex.isEmpty()) list << codex;
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase("QMYSQL", "fetch_conn");
+        db.setHostName(cfg.dbHost); db.setPort(cfg.dbPort);
+        db.setUserName(cfg.dbUser); db.setPassword(cfg.dbPass); db.setDatabaseName(cfg.dbName);
+
+        if (db.open()) {
+            QSqlQuery q(db);
+            q.exec(
+                "SELECT c.Codex, c.Code, c.Nom, c.Code_activite, c.Date_debut, "
+                "       GROUP_CONCAT(DISTINCT cc.Code_course ORDER BY cc.Code_course SEPARATOR ',') AS courses "
+                "FROM Competition c "
+                "LEFT JOIN Competition_Course cc ON cc.Code_competition = c.Code "
+                "WHERE c.Codex IS NOT NULL AND c.Codex != '' "
+                "GROUP BY c.Codex, c.Code, c.Nom, c.Code_activite, c.Date_debut "
+                "ORDER BY c.Date_debut DESC, c.Code DESC "
+                "LIMIT 50"
+            );
+            while (q.next()) {
+                QString codex = q.value("Codex").toString().trimmed();
+                QString nom = q.value("Nom").toString().trimmed();
+                QString activite = q.value("Code_activite").toString().trimmed();
+                QString date = q.value("Date_debut").toString();
+                QString courses = q.value("courses").toString();
+                if (!codex.isEmpty()) {
+                    // Format: "CODEX | Activité | Course(s) N | Nom"
+                    QString display = codex;
+                    if (!activite.isEmpty()) display += " | " + activite;
+                    if (!courses.isEmpty()) display += " | C:" + courses;
+                    if (!nom.isEmpty()) {
+                        // Tronquer le nom si trop long
+                        if (nom.length() > 40) nom = nom.left(40) + "…";
+                        display += " | " + nom;
+                    }
+                    list << display;
+                }
+            }
+            db.close();
+        } else {
+            emit logMessage("[ERREUR BDD] " + db.lastError().text());
         }
-        db.close();
-    } else {
-        emit logMessage("[ERREUR BDD] " + db.lastError().text());
     }
     QSqlDatabase::removeDatabase("fetch_conn");
     return list;
