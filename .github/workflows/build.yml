@@ -12,12 +12,12 @@ jobs:
     runs-on: windows-latest
 
     steps:
-    # 1. Récupération du code
-    - uses: actions/checkout@v3
+    # 1. Récupération du code (Mise à jour v4)
+    - uses: actions/checkout@v4
 
     # 2. Installation de Qt 6.8 (Avec les sources pour compiler le driver)
     - name: Install Qt
-      uses: jurplel/install-qt-action@v3
+      uses: jurplel/install-qt-action@v4
       with:
         version: '6.8.0'
         host: 'windows'
@@ -30,16 +30,20 @@ jobs:
     - name: Download MariaDB Connector C
       shell: pwsh
       run: |
+        # Lien vers une version stable du connecteur C
         $url = "https://downloads.mariadb.com/Connectors/c/connector-c-3.3.8/mariadb-connector-c-3.3.8-win64.msi"
         Invoke-WebRequest -Uri $url -OutFile mariadb.msi
+        
+        # Installation silencieuse
         Start-Process msiexec.exe -ArgumentList '/i', 'mariadb.msi', '/quiet', '/norestart' -NoNewWindow -Wait
-        # Copier les libs dans un dossier simple pour la compilation
+        
+        # Préparation des dossiers pour la compilation
         New-Item -ItemType Directory -Force -Path "C:\mysql_libs"
         Copy-Item "C:\Program Files\MariaDB\MariaDB Connector C 64-bit\lib\libmariadb.lib" "C:\mysql_libs\"
         Copy-Item "C:\Program Files\MariaDB\MariaDB Connector C 64-bit\lib\libmariadb.dll" "C:\mysql_libs\"
         Copy-Item -Recurse "C:\Program Files\MariaDB\MariaDB Connector C 64-bit\include" "C:\mysql_libs\"
 
-    # 4. Compilation du Plugin QMYSQL (Le chaînon manquant !)
+    # 4. Compilation du Plugin QMYSQL
     - name: Compile QMYSQL Plugin
       shell: cmd
       run: |
@@ -47,16 +51,16 @@ jobs:
         mkdir build-plugin
         cd build-plugin
         
-        :: Chemin vers les sources du plugin dans l'installation Qt
+        :: Configuration CMake pour le plugin SQL MySQL
         qt-cmake "%Qt6_DIR%\..\..\Src\qtbase\src\plugins\sqldrivers\mysql" ^
           -G Ninja ^
           -DCMAKE_INSTALL_PREFIX="%Qt6_DIR%\..\.." ^
           -DMySQL_INCLUDE_DIR="C:\mysql_libs\include" ^
           -DMySQL_LIBRARY="C:\mysql_libs\libmariadb.lib"
         
+        :: Compilation et installation dans le dossier Qt temporaire de la CI
         cmake --build .
         cmake --install .
-        :: Le plugin est maintenant installé dans le dossier Qt de la CI
 
     # 5. Configuration et Compilation de TON application
     - name: Build Application
@@ -65,7 +69,9 @@ jobs:
         call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
         mkdir build
         cd build
-        qmake ..\LiveBridgeCpp\LiveBridge.pro CONFIG+=release
+        
+        :: Adapte le chemin si ton fichier .pro n'est pas dans le dossier racine
+        qmake ..\LiveBridge.pro CONFIG+=release
         nmake
 
     # 6. Déploiement (Windeployqt + DLLs manquantes)
@@ -74,22 +80,22 @@ jobs:
       run: |
         New-Item -ItemType Directory -Force -Path "ReleasePack"
         
-        # Copier l'exécutable compilé
+        # Copier l'exécutable compilé (ajuste le chemin si nécessaire)
         Copy-Item "build\release\LiveBridge.exe" "ReleasePack\"
         
-        # Copier la DLL MariaDB (Nécessaire pour le plugin)
+        # Copier la DLL MariaDB (Nécessaire pour le plugin que nous venons de compiler)
         Copy-Item "C:\mysql_libs\libmariadb.dll" "ReleasePack\"
         
-        # Utiliser l'outil Qt pour copier toutes les DLLs Qt (Core, Gui, Network, SQL, etc.)
+        # Utiliser l'outil Qt pour copier toutes les dépendances (Core, Gui, Network, SQL, etc.)
         $windeployqt = Get-Command windeployqt | Select-Object -ExpandProperty Source
         & $windeployqt --dir "ReleasePack" --plugindir "ReleasePack\plugins" --no-translations --compiler-runtime "ReleasePack\LiveBridge.exe"
         
-        # Vérification ultime : copier manuellement le plugin SQL compilé si windeployqt l'a raté
-        # (Windeployqt devrait le trouver car on l'a installé à l'étape 4, mais ceinture et bretelles)
-        
-    # 7. Création de l'artefact ZIP
+        # Vérification : s'assurer que le plugin mysql a bien été copié par windeployqt
+        # (Comme on l'a installé à l'étape 4, windeployqt devrait le trouver automatiquement)
+
+    # 7. Création de l'artefact ZIP (Mise à jour v4)
     - name: Upload Artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: LiveBridge-Portable-Windows
         path: ReleasePack
