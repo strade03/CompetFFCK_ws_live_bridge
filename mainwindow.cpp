@@ -1,8 +1,6 @@
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
 #include <QMessageBox>
-#include <QHBoxLayout>
-#include <QLabel>
 #include <QSettings>
 #include <QCoreApplication>
 #include <QFileInfo>
@@ -15,55 +13,15 @@ MainWindow::MainWindow(QWidget *parent)
     m_bridge = new LiveBridge(this);
     m_isRunning = false;
     
-    // Rename the button
-    ui->btnRefreshCodex->setText("Lister Courses");
-    
-    // Add filter combo next to the refresh button
-    QWidget *parentWidget = ui->btnRefreshCodex->parentWidget();
-    QLayout *parentLayout = parentWidget ? parentWidget->layout() : nullptr;
-    
-    m_cbFilter = new QComboBox(this);
-    m_cbFilter->setMinimumWidth(80);
-    m_cbFilter->addItems({"Tout", "SLA", "DES", "EXS", "OCR", "DRB", "FRE", "JEU", "MAR"});
-    m_cbFilter->setToolTip("Filtrer par type d'activité");
-    
-    if (parentLayout) {
-        QBoxLayout *boxLayout = qobject_cast<QBoxLayout*>(parentLayout);
-        if (boxLayout) {
-            int btnIndex = boxLayout->indexOf(ui->btnRefreshCodex);
-            if (btnIndex >= 0) {
-                QLabel *lblFilter = new QLabel("Filtre :", this);
-                boxLayout->insertWidget(btnIndex, m_cbFilter);
-                boxLayout->insertWidget(btnIndex, lblFilter);
-            } else {
-                boxLayout->addWidget(new QLabel("Filtre :", this));
-                boxLayout->addWidget(m_cbFilter);
-            }
-        } else {
-            parentLayout->addWidget(m_cbFilter);
-        }
-    } else {
-        QWidget *codexParent = ui->cbCodex->parentWidget();
-        QLayout *codexLayout = codexParent ? codexParent->layout() : nullptr;
-        if (codexLayout) {
-            QBoxLayout *bl = qobject_cast<QBoxLayout*>(codexLayout);
-            if (bl) {
-                bl->addWidget(new QLabel("Filtre :", this));
-                bl->addWidget(m_cbFilter);
-            }
-        }
-    }
-    
-    // Auto-refresh when filter changes
-    connect(m_cbFilter, &QComboBox::currentTextChanged, this, [this](const QString&) {
-        if (ui->cbCodex->count() > 0) {
-            on_btnRefreshCodex_clicked();
-        }
-    });
-    
     connect(m_bridge, &LiveBridge::logMessage, this, &MainWindow::appendLog);
     
-    // Load saved settings
+    // Auto-refresh course list when filter changes
+    connect(ui->cbFilter, &QComboBox::currentTextChanged, this, [this](const QString&) {
+        if (ui->cbCodex->count() > 0)
+            on_btnRefreshCodex_clicked();
+    });
+    
+    // Load saved settings (after setupUi so widgets exist)
     loadSettings();
 }
 
@@ -80,9 +38,7 @@ MainWindow::~MainWindow()
 
 QString MainWindow::settingsPath() const
 {
-    // Place the .ini next to the executable
-    QString appDir = QCoreApplication::applicationDirPath();
-    return appDir + "/livebridge.ini";
+    return QCoreApplication::applicationDirPath() + "/livebridge.ini";
 }
 
 void MainWindow::loadSettings()
@@ -114,8 +70,8 @@ void MainWindow::loadSettings()
     
     s.beginGroup("UI");
     QString filter = s.value("filter", "Tout").toString();
-    int idx = m_cbFilter->findText(filter);
-    if (idx >= 0) m_cbFilter->setCurrentIndex(idx);
+    int idx = ui->cbFilter->findText(filter);
+    if (idx >= 0) ui->cbFilter->setCurrentIndex(idx);
     s.endGroup();
     
     appendLog("[CONFIG] Paramètres chargés depuis " + path);
@@ -143,7 +99,7 @@ void MainWindow::saveSettings()
     s.endGroup();
     
     s.beginGroup("UI");
-    s.setValue("filter", m_cbFilter->currentText());
+    s.setValue("filter", ui->cbFilter->currentText());
     s.endGroup();
 }
 
@@ -169,6 +125,7 @@ void MainWindow::on_btnStartStop_clicked()
             return;
         }
         
+        // Codex = first part before " | "
         QString codex = selected.split(" | ").first().trimmed();
 
         LiveBridge::Config cfg;
@@ -179,7 +136,6 @@ void MainWindow::on_btnStartStop_clicked()
         cfg.wsPort = ui->leWsPort->text().toInt();
         cfg.keyRace = codex;
 
-        // Save settings on start
         saveSettings();
 
         ui->txtConsole->clear();
@@ -198,7 +154,7 @@ void MainWindow::on_btnRefreshCodex_clicked()
     cfg.dbUser = ui->leDbUser->text(); cfg.dbPass = ui->leDbPass->text();
     cfg.dbName = ui->leDbName->text();
 
-    QString filter = m_cbFilter->currentText();
+    QString filter = ui->cbFilter->currentText();
     
     ui->cbCodex->clear();
     QStringList list = m_bridge->fetchCodex(cfg, filter);
