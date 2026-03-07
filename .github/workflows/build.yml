@@ -37,29 +37,27 @@ jobs:
         Start-Process msiexec.exe -ArgumentList '/i', 'mariadb.msi', '/quiet', '/norestart' -NoNewWindow -Wait
         
         New-Item -ItemType Directory -Force -Path "C:\mysql_libs"
-        
-        # Debug : lister le contenu installé
-        Write-Host "=== Listing MariaDB install ==="
-        Get-ChildItem -Recurse "C:\Program Files\MariaDB" | Select-Object FullName
+        New-Item -ItemType Directory -Force -Path "C:\mysql_libs\include"
         
         # Copie lib
-        $libPath = "C:\Program Files\MariaDB\MariaDB Connector C 64-bit\lib\libmariadb.lib"
-        if (Test-Path $libPath) {
-            Copy-Item $libPath "C:\mysql_libs\"
-            Write-Host "SUCCESS: libmariadb.lib found and copied."
-        } else {
-            Write-Error "FATAL: libmariadb.lib not found!"
-            exit 1
-        }
-        
+        Copy-Item "C:\Program Files\MariaDB\MariaDB Connector C 64-bit\lib\libmariadb.lib" "C:\mysql_libs\"
         Copy-Item "C:\Program Files\MariaDB\MariaDB Connector C 64-bit\lib\libmariadb.dll" "C:\mysql_libs\"
         
-        # Copie include — on prend TOUT le dossier include
-        Copy-Item -Recurse "C:\Program Files\MariaDB\MariaDB Connector C 64-bit\include" "C:\mysql_libs\"
+        # Copie TOUS les headers à plat dans include/
+        Copy-Item "C:\Program Files\MariaDB\MariaDB Connector C 64-bit\include\*.h" "C:\mysql_libs\include\"
+        # Plus les sous-dossiers mariadb/ et mysql/
+        if (Test-Path "C:\Program Files\MariaDB\MariaDB Connector C 64-bit\include\mariadb") {
+            Copy-Item "C:\Program Files\MariaDB\MariaDB Connector C 64-bit\include\mariadb\*.h" "C:\mysql_libs\include\" -ErrorAction SilentlyContinue
+        }
+        if (Test-Path "C:\Program Files\MariaDB\MariaDB Connector C 64-bit\include\mysql") {
+            Copy-Item "C:\Program Files\MariaDB\MariaDB Connector C 64-bit\include\mysql\*.h" "C:\mysql_libs\include\" -ErrorAction SilentlyContinue
+        }
         
-        # Debug : vérifier que mysql.h est trouvable
-        Write-Host "=== Searching for mysql.h ==="
-        Get-ChildItem -Recurse "C:\mysql_libs\include" -Filter "mysql.h" | Select-Object FullName
+        # Vérification
+        Write-Host "=== Include dir contents ==="
+        Get-ChildItem "C:\mysql_libs\include\mysql.h"
+        Write-Host "=== Lib dir contents ==="
+        Get-ChildItem "C:\mysql_libs\libmariadb.*"
 
     # 5. Compilation du Plugin QMYSQL
     - name: Compile QMYSQL Plugin
@@ -73,45 +71,36 @@ jobs:
         mkdir build-sqldrivers
         cd build-sqldrivers
         
-        :: Trouver le bon chemin include (mariadb/ sous-dossier ou racine)
-        if exist "C:\mysql_libs\include\mariadb\mysql.h" (
-            set "MYSQL_INC=C:\mysql_libs\include\mariadb"
-            echo "Using include path: C:\mysql_libs\include\mariadb"
-        ) else if exist "C:\mysql_libs\include\mysql.h" (
-            set "MYSQL_INC=C:\mysql_libs\include"
-            echo "Using include path: C:\mysql_libs\include"
-        ) else (
-            echo "FATAL: mysql.h not found anywhere in C:\mysql_libs\include"
-            dir /s /b C:\mysql_libs\
-            exit /b 1
-        )
-        
+        echo "=== Running qt-cmake ==="
         %QT_PATH%\bin\qt-cmake.bat "%SRC_PATH%\qtbase\src\plugins\sqldrivers" ^
           -G "Ninja" ^
+          -DCMAKE_INSTALL_PREFIX="%QT_PATH%" ^
           -DFEATURE_sql_mysql=ON ^
-          -DMySQL_INCLUDE_DIR="%MYSQL_INC%" ^
+          -DMySQL_INCLUDE_DIR="C:\mysql_libs\include" ^
           -DMySQL_LIBRARY="C:\mysql_libs\libmariadb.lib"
         
-        :: Vérifier que cmake a bien activé MySQL
-        echo "=== CMake Cache check ==="
+        echo "=== config.summary ==="
+        type config.summary
+        
+        echo "=== CMakeCache MySQL entries ==="
         findstr /i "mysql" CMakeCache.txt
+        findstr /i "FEATURE_sql" CMakeCache.txt
         
-        :: Compilation
-        cmake --build . --verbose
+        echo "=== Building ==="
+        cmake --build . --verbose 2>&1
         
-        :: Vérification stricte que le plugin existe
-        echo "=== All generated DLLs ==="
+        echo "=== Build complete, listing all DLLs ==="
         dir /s /b *.dll
         
-        where /r . qsqlmysql.dll
+        echo "=== Checking for qsqlmysql.dll ==="
+        dir /s /b qsqlmysql.dll
         if errorlevel 1 (
-            echo "FATAL: qsqlmysql.dll was NOT compiled!"
-            echo "=== Full build directory listing ==="
+            echo "FATAL: qsqlmysql.dll was NOT produced!"
+            echo "=== Full build tree ==="
             dir /s /b .
             exit /b 1
         )
-        
-        echo "SUCCESS: qsqlmysql.dll found."
+        echo "SUCCESS: qsqlmysql.dll compiled."
 
     # 6. Compilation de l'application
     - name: Build Application
@@ -143,26 +132,24 @@ jobs:
         # 2. Windeployqt
         & "$env:QT_BIN\windeployqt.exe" --dir "ReleasePack" --plugindir "ReleasePack\plugins" --no-translations --compiler-runtime "ReleasePack\LiveBridge.exe"
         
-        # 3. Copie du plugin QMYSQL compilé (écrase celui par défaut si existant)
+        # 3. Copie du plugin QMYSQL compilé
         Write-Host "=== Searching for qsqlmysql.dll ==="
         $plugin = Get-ChildItem -Path "build-sqldrivers" -Filter "qsqlmysql.dll" -Recurse | Select-Object -First 1
         
         if ($plugin) {
-            Write-Host "FOUND PLUGIN at: $($plugin.FullName)"
+            Write-Host "FOUND: $($plugin.FullName)"
             $targetDir = "ReleasePack\plugins\sqldrivers"
             if (-not (Test-Path $targetDir)) {
                 New-Item -ItemType Directory -Force -Path $targetDir
             }
             Copy-Item $plugin.FullName "$targetDir\" -Force
-            Write-Host "Plugin copied to $targetDir"
         } else {
-            Write-Error "CRITICAL: qsqlmysql.dll not found in build-sqldrivers!"
-            Get-ChildItem -Path "build-sqldrivers" -Recurse
+            Write-Error "CRITICAL: qsqlmysql.dll not found!"
             exit 1
         }
         
-        # 4. Vérification finale du contenu
-        Write-Host "=== Final ReleasePack contents ==="
+        # 4. Listing final
+        Write-Host "=== Final ReleasePack ==="
         Get-ChildItem -Recurse "ReleasePack" | Select-Object FullName
 
     # 8. Upload
