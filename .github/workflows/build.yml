@@ -1,227 +1,95 @@
-name: Build Multi-Platform
+name: Windows Build (Portable)
 
 on:
   push:
-    branches: [ main ]
-    # Optimisation : On ne lance pas le build si on modifie juste la doc
-    paths-ignore:
-      - 'README.md'
-      - 'docs/**'
-      - '.gitignore'
-      - 'LICENSE'
-      - 'images/**'
-      - '**/*.txt'
+    branches: [ main, master ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, master ]
 
 jobs:
-  # =========================================================
-  # JOB MACOS
-  # =========================================================
-  build-macos:
-    name: Build macOS
-    runs-on: macos-latest
-    
-    steps:
-      - name: Checkout du code
-        uses: actions/checkout@v4
-
-      - name: Installation de Qt
-        uses: jurplel/install-qt-action@v3
-        with:
-          version: '6.6.2' # Version stable CI
-          host: 'mac'
-          target: 'desktop'
-          modules: 'qtmultimedia qt5compat'
-          
-      - name: Téléchargement FFmpeg Statique (macOS)
-        run: |
-          # On télécharge la version officielle statique pour Mac (evermeet.cx)
-          curl -L -o ffmpeg.zip https://evermeet.cx/ffmpeg/ffmpeg-6.1.zip
-          curl -L -o ffprobe.zip https://evermeet.cx/ffmpeg/ffprobe-6.1.zip
-          unzip ffmpeg.zip
-          unzip ffprobe.zip
-          # On les rend exécutables
-          chmod +x ffmpeg ffprobe
-
-      - name: Compilation
-        run: |
-          qmake son_fusion.pro CONFIG+=release
-          make -j$(sysctl -n hw.ncpu)
-
-      - name: Création du paquet et Signature
-        run: |
-          mkdir -p deploy
-          cp -r son_fusion.app deploy/
-          mkdir -p deploy/son_fusion.app/Contents/MacOS
-          
-          # COPIE DES BINAIRES STATIQUES (ceux qu'on vient de télécharger)
-          cp ffmpeg deploy/son_fusion.app/Contents/MacOS/
-          cp ffprobe deploy/son_fusion.app/Contents/MacOS/
-          
-          # Nettoyage et préparation Qt
-          macdeployqt deploy/son_fusion.app -verbose=2
-          
-          # Signature (Force + Deep pour signer aussi ffmpeg à l'intérieur)
-          codesign --force --deep --sign - deploy/son_fusion.app
-          
-          # Création du DMG avec hdiutil
-          hdiutil create -volname "SonFusion" -srcfolder deploy/son_fusion.app -ov -format UDZO deploy/son_fusion.dmg
-          mv deploy/son_fusion.dmg SonFusion_macOS.dmg
-
-      - name: Upload Artifact macOS
-        uses: actions/upload-artifact@v4
-        with:
-          name: SonFusion-macOS
-          path: SonFusion_macOS.dmg
-
-  # =========================================================
-  # JOB LINUX (AppImage)
-  # =========================================================
-  build-linux:
-    name: Build Linux (AppImage)
-    runs-on: ubuntu-22.04 
-    
-    steps:
-      - name: Checkout du code
-        uses: actions/checkout@v4
-
-      - name: Installation de Qt
-        uses: jurplel/install-qt-action@v3
-        with:
-          version: '6.6.2'
-          host: 'linux'
-          target: 'desktop'
-          modules: 'qtmultimedia qt5compat'
-
-      - name: Installation des dépendances Linux
-        run: |
-          sudo apt-get update
-          
-          # FIX CRITIQUE : Installer libunwind-dev en premier pour éviter les conflits
-          sudo apt-get install -y libunwind-dev
-
-          # Installation des libs graphiques, Gstreamer (audio) et outils
-          sudo apt-get install -y build-essential libgl1-mesa-dev libxkbcommon-x11-0 \
-            libpulse-dev libasound2-dev \
-            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-            libgstreamer-plugins-good1.0-0 libgstreamer-plugins-bad1.0-0 \
-            ffmpeg libxcb-cursor0 libxcb-xinerama0
-
-      - name: Compilation
-        run: |
-          qmake son_fusion.pro CONFIG+=release
-          make -j$(nproc)
-
-      - name: Création de l'AppImage
-        run: |
-          # 1. Télécharger l'outil de déploiement
-          wget -q https://github.com/probonopd/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage
-          chmod +x linuxdeployqt-continuous-x86_64.AppImage
-
-          # 2. Créer un fichier .desktop minimal pour l'outil
-          cat > default.desktop <<EOF
-          [Desktop Entry]
-          Type=Application
-          Name=SonFusion
-          Exec=son_fusion
-          Icon=default
-          Categories=AudioVideo;Audio;
-          EOF
-          
-          # Icône temporaire si absente
-          touch default.png
-
-          # 3. Lancer la création du paquet portable
-          unset QT_PLUGIN_PATH
-          export LD_LIBRARY_PATH=$LD_LIBRARY_PATH
-          
-          # -unsupported-allow-new-glibc est nécessaire sur Ubuntu 22.04+
-          ./linuxdeployqt-continuous-x86_64.AppImage ./son_fusion -appimage -unsupported-allow-new-glibc -extra-plugins=iconengines,platformthemes
-
-          # 4. Renommer
-          mv SonFusion-*.AppImage SonFusion_Linux.AppImage
-
-      - name: Upload Artifact Linux
-        uses: actions/upload-artifact@v4
-        with:
-          name: SonFusion-Linux
-          path: SonFusion_Linux.AppImage
-
-# =========================================================
-  # JOB WINDOWS (MSVC) + INSTALLER (Inno Setup)
-  # =========================================================
-  build-windows:
-    name: Build Windows (Installer)
+  build:
+    name: Build on Windows
     runs-on: windows-latest
-    
+
     steps:
-      - name: Checkout du code
-        uses: actions/checkout@v4
+    # 1. Récupération du code
+    - uses: actions/checkout@v3
 
-      - name: Installation de Qt
-        uses: jurplel/install-qt-action@v3
-        with:
-          version: '6.6.2'
-          arch: win64_msvc2019_64
-          modules: 'qtmultimedia qt5compat'
+    # 2. Installation de Qt 6.8 (Avec les sources pour compiler le driver)
+    - name: Install Qt
+      uses: jurplel/install-qt-action@v3
+      with:
+        version: '6.8.0'
+        host: 'windows'
+        target: 'desktop'
+        arch: 'win64_msvc2022_64'
+        source: 'true'  # IMPORTANT : On veut les sources !
+        modules: 'qtwebsockets'
 
-      - name: Installation de Inno Setup
-        run: choco install innosetup
+    # 3. Téléchargement des librairies MariaDB (Compatible MySQL)
+    - name: Download MariaDB Connector C
+      shell: pwsh
+      run: |
+        $url = "https://downloads.mariadb.com/Connectors/c/connector-c-3.3.8/mariadb-connector-c-3.3.8-win64.msi"
+        Invoke-WebRequest -Uri $url -OutFile mariadb.msi
+        Start-Process msiexec.exe -ArgumentList '/i', 'mariadb.msi', '/quiet', '/norestart' -NoNewWindow -Wait
+        # Copier les libs dans un dossier simple pour la compilation
+        New-Item -ItemType Directory -Force -Path "C:\mysql_libs"
+        Copy-Item "C:\Program Files\MariaDB\MariaDB Connector C 64-bit\lib\libmariadb.lib" "C:\mysql_libs\"
+        Copy-Item "C:\Program Files\MariaDB\MariaDB Connector C 64-bit\lib\libmariadb.dll" "C:\mysql_libs\"
+        Copy-Item -Recurse "C:\Program Files\MariaDB\MariaDB Connector C 64-bit\include" "C:\mysql_libs\"
 
-      - name: Téléchargement de FFmpeg (Windows)
-        shell: pwsh
-        run: |
-          $url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
-          $output = "ffmpeg.zip"
-          Invoke-WebRequest -Uri $url -OutFile $output
-          Expand-Archive $output -DestinationPath .
-          New-Item -ItemType Directory -Force -Path bin_win
-          Move-Item ffmpeg-*-essentials_build/bin/ffmpeg.exe bin_win/
-          Move-Item ffmpeg-*-essentials_build/bin/ffprobe.exe bin_win/
+    # 4. Compilation du Plugin QMYSQL (Le chaînon manquant !)
+    - name: Compile QMYSQL Plugin
+      shell: cmd
+      run: |
+        call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+        mkdir build-plugin
+        cd build-plugin
+        
+        :: Chemin vers les sources du plugin dans l'installation Qt
+        qt-cmake "%Qt6_DIR%\..\..\Src\qtbase\src\plugins\sqldrivers\mysql" ^
+          -G Ninja ^
+          -DCMAKE_INSTALL_PREFIX="%Qt6_DIR%\..\.." ^
+          -DMySQL_INCLUDE_DIR="C:\mysql_libs\include" ^
+          -DMySQL_LIBRARY="C:\mysql_libs\libmariadb.lib"
+        
+        cmake --build .
+        cmake --install .
+        :: Le plugin est maintenant installé dans le dossier Qt de la CI
 
-      - name: Configuration de l'environnement MSVC
-        uses: ilammy/msvc-dev-cmd@v1
+    # 5. Configuration et Compilation de TON application
+    - name: Build Application
+      shell: cmd
+      run: |
+        call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+        mkdir build
+        cd build
+        qmake ..\LiveBridgeCpp\LiveBridge.pro CONFIG+=release
+        nmake
 
-      - name: Compilation
-        shell: cmd
-        run: |
-          qmake son_fusion.pro CONFIG+=release
-          nmake
-
-      - name: Préparation des fichiers (Deploy)
-        shell: pwsh
-        run: |
-          # 1. Créer le dossier qui sera lu par Inno Setup
-          New-Item -ItemType Directory -Force -Path deploy
-          
-          # 2. Copier l'exécutable
-          if (Test-Path "release/son_fusion.exe") {
-              Copy-Item "release/son_fusion.exe" "deploy/"
-          } else {
-              Copy-Item "son_fusion.exe" "deploy/"
-          }
-          
-          # 3. Copier FFmpeg
-          Copy-Item "bin_win/ffmpeg.exe" "deploy/"
-          Copy-Item "bin_win/ffprobe.exe" "deploy/"
-          
-          # 4. Copier les ressources (icones) si elles ne sont pas dans le .qrc
-          # (Si tu as fait la méthode .qrc, cette étape est optionnelle mais ne fait pas de mal)
-          if (Test-Path "icones") {
-              Copy-Item -Path "icones" -Destination "deploy/icones" -Recurse
-          }
-
-          # 5. Ajouter toutes les DLLs Qt automatiquement
-          windeployqt --release --compiler-runtime --no-translations deploy/son_fusion.exe
-
-      - name: Création de l'installeur (Inno Setup)
-        shell: cmd
-        run: |
-          "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer_script_github.iss
-
-      - name: Upload Artifact Windows Installer
-        uses: actions/upload-artifact@v4
-        with:
-          name: SonFusion-Windows-Setup
-          path: SonFusion_Setup_Windows.exe   
+    # 6. Déploiement (Windeployqt + DLLs manquantes)
+    - name: Package Application
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path "ReleasePack"
+        
+        # Copier l'exécutable compilé
+        Copy-Item "build\release\LiveBridge.exe" "ReleasePack\"
+        
+        # Copier la DLL MariaDB (Nécessaire pour le plugin)
+        Copy-Item "C:\mysql_libs\libmariadb.dll" "ReleasePack\"
+        
+        # Utiliser l'outil Qt pour copier toutes les DLLs Qt (Core, Gui, Network, SQL, etc.)
+        $windeployqt = Get-Command windeployqt | Select-Object -ExpandProperty Source
+        & $windeployqt --dir "ReleasePack" --plugindir "ReleasePack\plugins" --no-translations --compiler-runtime "ReleasePack\LiveBridge.exe"
+        
+        # Vérification ultime : copier manuellement le plugin SQL compilé si windeployqt l'a raté
+        # (Windeployqt devrait le trouver car on l'a installé à l'étape 4, mais ceinture et bretelles)
+        
+    # 7. Création de l'artefact ZIP
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: LiveBridge-Portable-Windows
+        path: ReleasePack
