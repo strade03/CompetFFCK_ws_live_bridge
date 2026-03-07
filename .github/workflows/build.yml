@@ -12,15 +12,12 @@ jobs:
     runs-on: windows-latest
 
     steps:
-    # 1. Récupération du code
     - uses: actions/checkout@v4
 
-    # 2. Installation de Python
     - uses: actions/setup-python@v5
       with:
         python-version: '3.x'
 
-    # 3. Installation de Qt 6.8 ET des Sources
     - name: Install Qt & Sources via aqtinstall
       shell: pwsh
       run: |
@@ -28,7 +25,6 @@ jobs:
         aqt install-qt windows desktop 6.8.0 win64_msvc2022_64 -m qtwebsockets --outputdir c:\qt
         aqt install-src windows desktop 6.8.0 --outputdir c:\qt
 
-    # 4. Téléchargement des librairies MariaDB
     - name: Download MariaDB Connector C
       shell: pwsh
       run: |
@@ -36,73 +32,107 @@ jobs:
         Invoke-WebRequest -Uri $url -OutFile mariadb.msi
         Start-Process msiexec.exe -ArgumentList '/i', 'mariadb.msi', '/quiet', '/norestart' -NoNewWindow -Wait
         
-        New-Item -ItemType Directory -Force -Path "C:\mysql_libs"
         New-Item -ItemType Directory -Force -Path "C:\mysql_libs\include"
         
-        # Copie lib
         Copy-Item "C:\Program Files\MariaDB\MariaDB Connector C 64-bit\lib\libmariadb.lib" "C:\mysql_libs\"
         Copy-Item "C:\Program Files\MariaDB\MariaDB Connector C 64-bit\lib\libmariadb.dll" "C:\mysql_libs\"
         
-        # Copie TOUS les headers à plat dans include/
+        # Copie tous les headers à plat
         Copy-Item "C:\Program Files\MariaDB\MariaDB Connector C 64-bit\include\*.h" "C:\mysql_libs\include\"
-        # Plus les sous-dossiers mariadb/ et mysql/
-        if (Test-Path "C:\Program Files\MariaDB\MariaDB Connector C 64-bit\include\mariadb") {
-            Copy-Item "C:\Program Files\MariaDB\MariaDB Connector C 64-bit\include\mariadb\*.h" "C:\mysql_libs\include\" -ErrorAction SilentlyContinue
-        }
-        if (Test-Path "C:\Program Files\MariaDB\MariaDB Connector C 64-bit\include\mysql") {
-            Copy-Item "C:\Program Files\MariaDB\MariaDB Connector C 64-bit\include\mysql\*.h" "C:\mysql_libs\include\" -ErrorAction SilentlyContinue
+        Get-ChildItem "C:\Program Files\MariaDB\MariaDB Connector C 64-bit\include" -Directory | ForEach-Object {
+            Copy-Item "$($_.FullName)\*.h" "C:\mysql_libs\include\" -ErrorAction SilentlyContinue
         }
         
-        # Vérification
-        Write-Host "=== Include dir contents ==="
-        Get-ChildItem "C:\mysql_libs\include\mysql.h"
-        Write-Host "=== Lib dir contents ==="
-        Get-ChildItem "C:\mysql_libs\libmariadb.*"
+        Write-Host "=== Verifying mysql.h ==="
+        if (-not (Test-Path "C:\mysql_libs\include\mysql.h")) {
+            Write-Error "FATAL: mysql.h not found"
+            exit 1
+        }
+        Get-ChildItem "C:\mysql_libs" -Recurse | Select-Object FullName
 
-    # 5. Compilation du Plugin QMYSQL
     - name: Compile QMYSQL Plugin
-      shell: cmd
+      shell: pwsh
       env:
         QT_PATH: C:\qt\6.8.0\msvc2022_64
         SRC_PATH: C:\qt\6.8.0\Src
       run: |
-        call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+        # Charger l'environnement MSVC
+        Import-Module "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+        Enter-VsDevShell -VsInstallPath "C:\Program Files\Microsoft Visual Studio\2022\Enterprise" -DevCmdArguments "-arch=x64" -SkipAutomaticLocation
         
-        mkdir build-sqldrivers
-        cd build-sqldrivers
+        # Vérifier que le source du plugin MySQL existe
+        $mysqlPluginSrc = "$env:SRC_PATH\qtbase\src\plugins\sqldrivers"
+        Write-Host "=== SQL drivers source ==="
+        Get-ChildItem $mysqlPluginSrc
         
-        echo "=== Running qt-cmake ==="
-        %QT_PATH%\bin\qt-cmake.bat "%SRC_PATH%\qtbase\src\plugins\sqldrivers" ^
-          -G "Ninja" ^
-          -DCMAKE_INSTALL_PREFIX="%QT_PATH%" ^
-          -DFEATURE_sql_mysql=ON ^
-          -DMySQL_INCLUDE_DIR="C:\mysql_libs\include" ^
-          -DMySQL_LIBRARY="C:\mysql_libs\libmariadb.lib"
+        if (Test-Path "$mysqlPluginSrc\mysql") {
+            Write-Host "MySQL plugin source directory found"
+            Get-ChildItem "$mysqlPluginSrc\mysql"
+        } else {
+            Write-Error "FATAL: No mysql subdirectory in sqldrivers source!"
+            Get-ChildItem $mysqlPluginSrc -Recurse
+            exit 1
+        }
         
-        echo "=== config.summary ==="
-        type config.summary
+        # Configurer
+        New-Item -ItemType Directory -Force -Path "build-sqldrivers"
+        Set-Location "build-sqldrivers"
         
-        echo "=== CMakeCache MySQL entries ==="
-        findstr /i "mysql" CMakeCache.txt
-        findstr /i "FEATURE_sql" CMakeCache.txt
+        Write-Host "=== Running qt-cmake ==="
+        & "$env:QT_PATH\bin\qt-cmake.bat" "$mysqlPluginSrc" `
+          -G "Ninja" `
+          -DCMAKE_INSTALL_PREFIX="$env:QT_PATH" `
+          -DFEATURE_sql_mysql=ON `
+          -DFEATURE_sql_mimer=OFF `
+          -DFEATURE_sql_psql=OFF `
+          -DFEATURE_sql_odbc=OFF `
+          -DFEATURE_sql_sqlite=OFF `
+          -DMySQL_INCLUDE_DIR="C:\mysql_libs\include" `
+          -DMySQL_LIBRARY="C:\mysql_libs\libmariadb.lib" `
+          2>&1 | Tee-Object -Variable cmakeOutput
         
-        echo "=== Building ==="
-        cmake --build . --verbose 2>&1
+        Write-Host "=== cmake exit code: $LASTEXITCODE ==="
         
-        echo "=== Build complete, listing all DLLs ==="
-        dir /s /b *.dll
+        # Afficher le config.summary
+        Write-Host "=== config.summary ==="
+        if (Test-Path "config.summary") {
+            Get-Content "config.summary"
+        } else {
+            Write-Host "No config.summary found"
+        }
         
-        echo "=== Checking for qsqlmysql.dll ==="
-        dir /s /b qsqlmysql.dll
-        if errorlevel 1 (
-            echo "FATAL: qsqlmysql.dll was NOT produced!"
-            echo "=== Full build tree ==="
-            dir /s /b .
-            exit /b 1
-        )
-        echo "SUCCESS: qsqlmysql.dll compiled."
+        # Vérifier dans CMakeCache que MySQL est ON
+        Write-Host "=== CMakeCache MySQL/SQL entries ==="
+        Select-String -Path "CMakeCache.txt" -Pattern "mysql|FEATURE_sql" -CaseSensitive:$false
+        
+        # Vérification critique : MySQL doit être ON
+        $mysqlFeature = Select-String -Path "CMakeCache.txt" -Pattern "FEATURE_sql_mysql" | Select-Object -First 1
+        Write-Host "MySQL feature line: $mysqlFeature"
+        if ($mysqlFeature -match "OFF") {
+            Write-Error "FATAL: FEATURE_sql_mysql is OFF! CMake did not detect MySQL properly."
+            Write-Host "=== Full CMakeCache ==="
+            Get-Content "CMakeCache.txt"
+            exit 1
+        }
+        
+        # Compiler
+        Write-Host "=== Building ==="
+        cmake --build . --verbose 2>&1 | Tee-Object -Variable buildOutput
+        Write-Host "=== Build exit code: $LASTEXITCODE ==="
+        
+        # Vérifier le résultat
+        Write-Host "=== All DLLs produced ==="
+        Get-ChildItem -Recurse -Filter "*.dll" | Select-Object FullName
+        
+        $plugin = Get-ChildItem -Recurse -Filter "qsqlmysql.dll" | Select-Object -First 1
+        if (-not $plugin) {
+            Write-Error "FATAL: qsqlmysql.dll was NOT produced!"
+            Write-Host "=== Full build tree ==="
+            Get-ChildItem -Recurse | Select-Object FullName
+            exit 1
+        }
+        Write-Host "SUCCESS: $($plugin.FullName)"
 
-    # 6. Compilation de l'application
     - name: Build Application
       shell: cmd
       env:
@@ -117,7 +147,6 @@ jobs:
         qmake ..\LiveBridge.pro "CONFIG+=release"
         nmake
 
-    # 7. Déploiement
     - name: Package Application
       shell: pwsh
       env:
@@ -125,34 +154,26 @@ jobs:
       run: |
         New-Item -ItemType Directory -Force -Path "ReleasePack"
         
-        # 1. Copie App & DLL MariaDB
         Copy-Item "build\release\LiveBridge.exe" "ReleasePack\"
         Copy-Item "C:\mysql_libs\libmariadb.dll" "ReleasePack\"
         
-        # 2. Windeployqt
         & "$env:QT_BIN\windeployqt.exe" --dir "ReleasePack" --plugindir "ReleasePack\plugins" --no-translations --compiler-runtime "ReleasePack\LiveBridge.exe"
         
-        # 3. Copie du plugin QMYSQL compilé
-        Write-Host "=== Searching for qsqlmysql.dll ==="
+        # Copie du plugin QMYSQL
         $plugin = Get-ChildItem -Path "build-sqldrivers" -Filter "qsqlmysql.dll" -Recurse | Select-Object -First 1
-        
         if ($plugin) {
             Write-Host "FOUND: $($plugin.FullName)"
             $targetDir = "ReleasePack\plugins\sqldrivers"
-            if (-not (Test-Path $targetDir)) {
-                New-Item -ItemType Directory -Force -Path $targetDir
-            }
+            New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
             Copy-Item $plugin.FullName "$targetDir\" -Force
         } else {
             Write-Error "CRITICAL: qsqlmysql.dll not found!"
             exit 1
         }
         
-        # 4. Listing final
         Write-Host "=== Final ReleasePack ==="
         Get-ChildItem -Recurse "ReleasePack" | Select-Object FullName
 
-    # 8. Upload
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
