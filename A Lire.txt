@@ -1,0 +1,17 @@
+Ce placer dans le dossier build :
+C:\Qt\6.8.3\msvc2022_64\bin\windeployqt.exe Monprogrammecompile.exe
+
+Le GROS point de vigilance avec le C++ sous Windows (MySQL)
+
+Étant donné que nous avons totalement supprimé Python (le module mysql-connector-python faisait tout le boulot magique avant), ton application C++ utilise nativement la classe QSqlDatabase de Qt.
+Sous Linux, ça marche instantanément. Mais sous Windows, Qt n'inclut pas le driver MySQL par défaut (pour des raisons de licences).
+
+Si, quand tu cliques sur "Lister BDD" ou "Lancer", la console t'affiche :
+[ERREUR BDD] Driver not loaded Driver not loaded
+
+Cela veut dire que ton Qt Windows n'a pas le plugin MySQL.
+Pour le régler :
+
+    Tu dois avoir le fichier qsqlmysql.dll (le driver Qt) dans le dossier sqldrivers de ta version de Qt (par exemple C:\Qt\5.15.2\mingw81_64\plugins\sqldrivers).
+
+    Et surtout, l'exécutable compilé a besoin du fichier libmysql.dll (ou libmariadb.dll) pour fonctionner. Il suffit de copier le fichier libmysql.dll à côté de ton exécutable compilé (dans le dossier release/debug). Comme j'ai vu que tu utilises MariaDB (libmariadb.so dans ton all_cbp.txt), tu connais déjà sûrement cette mécanique !
