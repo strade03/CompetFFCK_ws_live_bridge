@@ -29,6 +29,9 @@ private:
     QComboBox *m_cbFilter;
     
     void setRunningState(bool running);
+    void loadSettings();
+    void saveSettings();
+    QString settingsPath() const;
 };
 
 #endif // MAINWINDOW_H

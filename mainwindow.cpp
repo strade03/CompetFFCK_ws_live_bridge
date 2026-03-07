@@ -3,6 +3,9 @@
 #include <QMessageBox>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QSettings>
+#include <QCoreApplication>
+#include <QFileInfo>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -40,7 +43,6 @@ MainWindow::MainWindow(QWidget *parent)
             parentLayout->addWidget(m_cbFilter);
         }
     } else {
-        // Fallback: place near cbCodex
         QWidget *codexParent = ui->cbCodex->parentWidget();
         QLayout *codexLayout = codexParent ? codexParent->layout() : nullptr;
         if (codexLayout) {
@@ -60,13 +62,94 @@ MainWindow::MainWindow(QWidget *parent)
     });
     
     connect(m_bridge, &LiveBridge::logMessage, this, &MainWindow::appendLog);
+    
+    // Load saved settings
+    loadSettings();
 }
 
 MainWindow::~MainWindow()
 {
+    saveSettings();
     if (m_isRunning) m_bridge->stop();
     delete ui;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Settings (INI file next to the executable)
+// ═══════════════════════════════════════════════════════════════════════════
+
+QString MainWindow::settingsPath() const
+{
+    // Place the .ini next to the executable
+    QString appDir = QCoreApplication::applicationDirPath();
+    return appDir + "/livebridge.ini";
+}
+
+void MainWindow::loadSettings()
+{
+    QString path = settingsPath();
+    if (!QFileInfo::exists(path)) {
+        appendLog("[CONFIG] Pas de fichier de config, paramètres par défaut.");
+        return;
+    }
+    
+    QSettings s(path, QSettings::IniFormat);
+    
+    s.beginGroup("Database");
+    ui->leDbHost->setText(s.value("host", ui->leDbHost->text()).toString());
+    ui->leDbPort->setText(s.value("port", ui->leDbPort->text()).toString());
+    ui->leDbUser->setText(s.value("user", ui->leDbUser->text()).toString());
+    ui->leDbPass->setText(s.value("password", ui->leDbPass->text()).toString());
+    ui->leDbName->setText(s.value("name", ui->leDbName->text()).toString());
+    s.endGroup();
+    
+    s.beginGroup("Notification");
+    ui->leNotifHost->setText(s.value("host", ui->leNotifHost->text()).toString());
+    ui->leNotifPort->setText(s.value("port", ui->leNotifPort->text()).toString());
+    s.endGroup();
+    
+    s.beginGroup("WebSocket");
+    ui->leWsPort->setText(s.value("port", ui->leWsPort->text()).toString());
+    s.endGroup();
+    
+    s.beginGroup("UI");
+    QString filter = s.value("filter", "Tout").toString();
+    int idx = m_cbFilter->findText(filter);
+    if (idx >= 0) m_cbFilter->setCurrentIndex(idx);
+    s.endGroup();
+    
+    appendLog("[CONFIG] Paramètres chargés depuis " + path);
+}
+
+void MainWindow::saveSettings()
+{
+    QSettings s(settingsPath(), QSettings::IniFormat);
+    
+    s.beginGroup("Database");
+    s.setValue("host", ui->leDbHost->text());
+    s.setValue("port", ui->leDbPort->text());
+    s.setValue("user", ui->leDbUser->text());
+    s.setValue("password", ui->leDbPass->text());
+    s.setValue("name", ui->leDbName->text());
+    s.endGroup();
+    
+    s.beginGroup("Notification");
+    s.setValue("host", ui->leNotifHost->text());
+    s.setValue("port", ui->leNotifPort->text());
+    s.endGroup();
+    
+    s.beginGroup("WebSocket");
+    s.setValue("port", ui->leWsPort->text());
+    s.endGroup();
+    
+    s.beginGroup("UI");
+    s.setValue("filter", m_cbFilter->currentText());
+    s.endGroup();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Slots
+// ═══════════════════════════════════════════════════════════════════════════
 
 void MainWindow::appendLog(const QString& msg)
 {
@@ -95,6 +178,9 @@ void MainWindow::on_btnStartStop_clicked()
         cfg.notifHost = ui->leNotifHost->text(); cfg.notifPort = ui->leNotifPort->text().toInt();
         cfg.wsPort = ui->leWsPort->text().toInt();
         cfg.keyRace = codex;
+
+        // Save settings on start
+        saveSettings();
 
         ui->txtConsole->clear();
         appendLog("Codex sélectionné: " + codex);
