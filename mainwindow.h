@@ -2,6 +2,7 @@
 #define MAINWINDOW_H
 
 #include <QMainWindow>
+#include <QComboBox>
 #include "livebridge.h"
 
 QT_BEGIN_NAMESPACE
@@ -25,6 +26,7 @@ private:
     Ui::MainWindow *ui;
     LiveBridge *m_bridge;
     bool m_isRunning;
+    QComboBox *m_cbFilter;
     
     void setRunningState(bool running);
 };

@@ -109,7 +109,7 @@ QJsonObject LiveBridge::sqlTableToAdv(QSqlQuery& q, const QString& tableName) {
 //  Codex list & start/stop
 // ═══════════════════════════════════════════════════════════════════════════
 
-QStringList LiveBridge::fetchCodex(const Config& cfg) {
+QStringList LiveBridge::fetchCodex(const Config& cfg, const QString& filterActivite) {
     QStringList list;
     {
         QSqlDatabase db = QSqlDatabase::addDatabase("QMYSQL", "fetch_conn");
@@ -118,16 +118,22 @@ QStringList LiveBridge::fetchCodex(const Config& cfg) {
 
         if (db.open()) {
             QSqlQuery q(db);
-            q.exec(
+            
+            QString sql =
                 "SELECT c.Codex, c.Code, c.Nom, c.Code_activite, c.Date_debut, "
                 "       GROUP_CONCAT(DISTINCT cc.Code_course ORDER BY cc.Code_course SEPARATOR ',') AS courses "
                 "FROM Competition c "
                 "LEFT JOIN Competition_Course cc ON cc.Code_competition = c.Code "
-                "WHERE c.Codex IS NOT NULL AND c.Codex != '' "
-                "GROUP BY c.Codex, c.Code, c.Nom, c.Code_activite, c.Date_debut "
-                "ORDER BY c.Date_debut DESC, c.Code DESC "
-                "LIMIT 50"
-            );
+                "WHERE c.Codex IS NOT NULL AND c.Codex != '' ";
+            
+            if (!filterActivite.isEmpty() && filterActivite != "Tout")
+                sql += "AND c.Code_activite = '" + filterActivite + "' ";
+            
+            sql += "GROUP BY c.Codex, c.Code, c.Nom, c.Code_activite, c.Date_debut "
+                   "ORDER BY c.Date_debut DESC, c.Code DESC "
+                   "LIMIT 50";
+            
+            q.exec(sql);
             while (q.next()) {
                 QString codex = q.value("Codex").toString().trimmed();
                 QString nom = q.value("Nom").toString().trimmed();
@@ -135,12 +141,10 @@ QStringList LiveBridge::fetchCodex(const Config& cfg) {
                 QString date = q.value("Date_debut").toString();
                 QString courses = q.value("courses").toString();
                 if (!codex.isEmpty()) {
-                    // Format: "CODEX | Activité | Course(s) N | Nom"
                     QString display = codex;
                     if (!activite.isEmpty()) display += " | " + activite;
                     if (!courses.isEmpty()) display += " | C:" + courses;
                     if (!nom.isEmpty()) {
-                        // Tronquer le nom si trop long
                         if (nom.length() > 40) nom = nom.left(40) + "…";
                         display += " | " + nom;
                     }

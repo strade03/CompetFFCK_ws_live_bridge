@@ -42,7 +42,7 @@ public:
 
     bool start(const Config& cfg);
     void stop();
-    QStringList fetchCodex(const Config& cfg);
+    QStringList fetchCodex(const Config& cfg, const QString& filterActivite = "");
 
 signals:
     void logMessage(const QString& msg);
