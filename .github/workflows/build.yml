@@ -41,7 +41,7 @@ jobs:
         Copy-Item "C:\Program Files\MariaDB\MariaDB Connector C 64-bit\lib\libmariadb.dll" "C:\mysql_libs\"
         Copy-Item -Recurse "C:\Program Files\MariaDB\MariaDB Connector C 64-bit\include" "C:\mysql_libs\"
 
-    # 5. Compilation du Plugin QMYSQL (Installation dans un dossier local connu)
+    # 5. Compilation du Plugin QMYSQL
     - name: Compile QMYSQL Plugin
       shell: cmd
       env:
@@ -53,8 +53,7 @@ jobs:
         mkdir build-sqldrivers
         cd build-sqldrivers
         
-        :: On définit CMAKE_INSTALL_PREFIX vers un dossier local temporaire (C:\mysql-plugin-build)
-        :: Cela force le fichier compilé à aller là où on veut lors du 'cmake --install'
+        :: Configuration
         %QT_PATH%\bin\qt-cmake.bat "%SRC_PATH%\qtbase\src\plugins\sqldrivers" ^
           -G "Ninja" ^
           -DCMAKE_INSTALL_PREFIX="C:\mysql-plugin-build" ^
@@ -64,10 +63,7 @@ jobs:
         :: Compilation
         cmake --build . --target qsqlmysql
         
-        :: Installation dans C:\mysql-plugin-build
-        cmake --install .
-        
-        echo "Plugin installed to C:\mysql-plugin-build"
+        echo "Plugin compilation finished."
 
     # 6. Compilation de TON application
     - name: Build Application
@@ -84,30 +80,45 @@ jobs:
         qmake ..\LiveBridge.pro "CONFIG+=release"
         nmake
 
-    # 7. Déploiement (Passage en CMD pour charger l'environnement VS)
+    # 7. Déploiement (Script PowerShell Intelligent)
     - name: Package Application
-      shell: cmd
+      shell: pwsh
       env:
         QT_BIN: C:\qt\6.8.0\msvc2022_64\bin
       run: |
-        call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+        New-Item -ItemType Directory -Force -Path "ReleasePack"
         
-        mkdir ReleasePack
+        # 1. Copie de l'application
+        Write-Host "Copying executable..."
+        Copy-Item "build\release\LiveBridge.exe" "ReleasePack\"
         
-        :: 1. Copie de l'exécutable
-        copy "build\release\LiveBridge.exe" "ReleasePack\"
+        # 2. Copie de la DLL MariaDB
+        Write-Host "Copying MariaDB DLL..."
+        Copy-Item "C:\mysql_libs\libmariadb.dll" "ReleasePack\"
         
-        :: 2. Copie de la DLL MariaDB
-        copy "C:\mysql_libs\libmariadb.dll" "ReleasePack\"
+        # 3. Windeployqt
+        Write-Host "Running windeployqt..."
+        & "$env:QT_BIN\windeployqt.exe" --dir "ReleasePack" --plugindir "ReleasePack\plugins" --no-translations --compiler-runtime "ReleasePack\LiveBridge.exe"
         
-        :: 3. Windeployqt (Génère toute la structure)
-        "%QT_BIN%\windeployqt.exe" --dir ReleasePack --plugindir ReleasePack\plugins --no-translations --compiler-runtime "ReleasePack\LiveBridge.exe"
+        # 4. RECHERCHE ET COPIE DU PLUGIN MYSQL (La méthode infaillible)
+        Write-Host "Searching for qsqlmysql.dll in build directory..."
         
-        :: 4. COPIE DU PLUGIN MYSQL DEPUIS LE DOSSIER D'INSTALLATION DE L'ÉTAPE 5
-        :: Le chemin d'installation standard de Qt est plugins/sqldrivers
-        copy "C:\mysql-plugin-build\plugins\sqldrivers\qsqlmysql.dll" "ReleasePack\plugins\sqldrivers\"
+        # On cherche le fichier n'importe où dans le dossier de build du plugin
+        $plugin = Get-ChildItem -Path "build-sqldrivers" -Filter "qsqlmysql.dll" -Recurse | Select-Object -First 1
         
-        echo "Packaging complete."
+        if ($plugin) {
+            Write-Host "FOUND PLUGIN at: $($plugin.FullName)"
+            # On s'assure que le dossier de destination existe
+            if (-not (Test-Path "ReleasePack\plugins\sqldrivers")) {
+                New-Item -ItemType Directory -Force -Path "ReleasePack\plugins\sqldrivers"
+            }
+            Copy-Item $plugin.FullName "ReleasePack\plugins\sqldrivers\"
+            Write-Host "Plugin copied successfully!"
+        } else {
+            Write-Error "CRITICAL: Could not find qsqlmysql.dll anywhere! Listing build dir for debug:"
+            Get-ChildItem -Path "build-sqldrivers" -Recurse
+            exit 1
+        }
 
     # 8. Upload
     - name: Upload Artifact
