@@ -38,20 +38,30 @@ jobs:
         
         New-Item -ItemType Directory -Force -Path "C:\mysql_libs"
         
-        # Copie et vérification des fichiers critiques
+        # Debug : lister le contenu installé
+        Write-Host "=== Listing MariaDB install ==="
+        Get-ChildItem -Recurse "C:\Program Files\MariaDB" | Select-Object FullName
+        
+        # Copie lib
         $libPath = "C:\Program Files\MariaDB\MariaDB Connector C 64-bit\lib\libmariadb.lib"
         if (Test-Path $libPath) {
             Copy-Item $libPath "C:\mysql_libs\"
             Write-Host "SUCCESS: libmariadb.lib found and copied."
         } else {
-            Write-Error "FATAL: libmariadb.lib not found at expected path!"
+            Write-Error "FATAL: libmariadb.lib not found!"
             exit 1
         }
-
+        
         Copy-Item "C:\Program Files\MariaDB\MariaDB Connector C 64-bit\lib\libmariadb.dll" "C:\mysql_libs\"
+        
+        # Copie include — on prend TOUT le dossier include
         Copy-Item -Recurse "C:\Program Files\MariaDB\MariaDB Connector C 64-bit\include" "C:\mysql_libs\"
+        
+        # Debug : vérifier que mysql.h est trouvable
+        Write-Host "=== Searching for mysql.h ==="
+        Get-ChildItem -Recurse "C:\mysql_libs\include" -Filter "mysql.h" | Select-Object FullName
 
-    # 5. Compilation du Plugin QMYSQL (Mode Force Brute)
+    # 5. Compilation du Plugin QMYSQL
     - name: Compile QMYSQL Plugin
       shell: cmd
       env:
@@ -63,20 +73,47 @@ jobs:
         mkdir build-sqldrivers
         cd build-sqldrivers
         
-        :: ON FORCE LA COMPILATION MYSQL avec -DFEATURE_sql_mysql=ON
-        :: Si les chemins sont mauvais, ça plantera ici (ce qu'on veut) au lieu de continuer silencieusement.
+        :: Trouver le bon chemin include (mariadb/ sous-dossier ou racine)
+        if exist "C:\mysql_libs\include\mariadb\mysql.h" (
+            set "MYSQL_INC=C:\mysql_libs\include\mariadb"
+            echo "Using include path: C:\mysql_libs\include\mariadb"
+        ) else if exist "C:\mysql_libs\include\mysql.h" (
+            set "MYSQL_INC=C:\mysql_libs\include"
+            echo "Using include path: C:\mysql_libs\include"
+        ) else (
+            echo "FATAL: mysql.h not found anywhere in C:\mysql_libs\include"
+            dir /s /b C:\mysql_libs\
+            exit /b 1
+        )
+        
         %QT_PATH%\bin\qt-cmake.bat "%SRC_PATH%\qtbase\src\plugins\sqldrivers" ^
           -G "Ninja" ^
           -DFEATURE_sql_mysql=ON ^
-          -DMySQL_INCLUDE_DIR="C:\mysql_libs\include" ^
+          -DMySQL_INCLUDE_DIR="%MYSQL_INC%" ^
           -DMySQL_LIBRARY="C:\mysql_libs\libmariadb.lib"
         
-        :: Compilation verbeuse pour voir ce qui se passe
+        :: Vérifier que cmake a bien activé MySQL
+        echo "=== CMake Cache check ==="
+        findstr /i "mysql" CMakeCache.txt
+        
+        :: Compilation
         cmake --build . --verbose
         
-        echo "Compilation finished."
+        :: Vérification stricte que le plugin existe
+        echo "=== All generated DLLs ==="
+        dir /s /b *.dll
+        
+        where /r . qsqlmysql.dll
+        if errorlevel 1 (
+            echo "FATAL: qsqlmysql.dll was NOT compiled!"
+            echo "=== Full build directory listing ==="
+            dir /s /b .
+            exit /b 1
+        )
+        
+        echo "SUCCESS: qsqlmysql.dll found."
 
-    # 6. Compilation de TON application
+    # 6. Compilation de l'application
     - name: Build Application
       shell: cmd
       env:
@@ -99,29 +136,34 @@ jobs:
       run: |
         New-Item -ItemType Directory -Force -Path "ReleasePack"
         
-        # 1. Copie App & DLL
+        # 1. Copie App & DLL MariaDB
         Copy-Item "build\release\LiveBridge.exe" "ReleasePack\"
         Copy-Item "C:\mysql_libs\libmariadb.dll" "ReleasePack\"
         
         # 2. Windeployqt
         & "$env:QT_BIN\windeployqt.exe" --dir "ReleasePack" --plugindir "ReleasePack\plugins" --no-translations --compiler-runtime "ReleasePack\LiveBridge.exe"
         
-        # 3. Recherche du plugin généré
-        Write-Host "Searching for qsqlmysql.dll..."
+        # 3. Copie du plugin QMYSQL compilé (écrase celui par défaut si existant)
+        Write-Host "=== Searching for qsqlmysql.dll ==="
         $plugin = Get-ChildItem -Path "build-sqldrivers" -Filter "qsqlmysql.dll" -Recurse | Select-Object -First 1
         
         if ($plugin) {
             Write-Host "FOUND PLUGIN at: $($plugin.FullName)"
-            if (-not (Test-Path "ReleasePack\plugins\sqldrivers")) {
-                New-Item -ItemType Directory -Force -Path "ReleasePack\plugins\sqldrivers"
+            $targetDir = "ReleasePack\plugins\sqldrivers"
+            if (-not (Test-Path $targetDir)) {
+                New-Item -ItemType Directory -Force -Path $targetDir
             }
-            Copy-Item $plugin.FullName "ReleasePack\plugins\sqldrivers\"
+            Copy-Item $plugin.FullName "$targetDir\" -Force
+            Write-Host "Plugin copied to $targetDir"
         } else {
-            # DEBUG : Si ça échoue, on liste tout pour comprendre
-            Write-Error "CRITICAL: Plugin compilation failed silently? Listing build dir:"
+            Write-Error "CRITICAL: qsqlmysql.dll not found in build-sqldrivers!"
             Get-ChildItem -Path "build-sqldrivers" -Recurse
             exit 1
         }
+        
+        # 4. Vérification finale du contenu
+        Write-Host "=== Final ReleasePack contents ==="
+        Get-ChildItem -Recurse "ReleasePack" | Select-Object FullName
 
     # 8. Upload
     - name: Upload Artifact
