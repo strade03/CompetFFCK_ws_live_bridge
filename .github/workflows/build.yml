@@ -20,14 +20,12 @@ jobs:
       with:
         python-version: '3.x'
 
-    # 3. Installation de Qt 6.8 ET des Sources
+    # 3. Installation de Qt 6.8 ET des Sources via aqtinstall
     - name: Install Qt & Sources via aqtinstall
       shell: pwsh
       run: |
         pip install aqtinstall
-        # Installation des binaires
         aqt install-qt windows desktop 6.8.0 win64_msvc2022_64 -m qtwebsockets --outputdir c:\qt
-        # Installation des sources (Vital pour le plugin)
         aqt install-src windows desktop 6.8.0 --outputdir c:\qt
 
     # 4. Téléchargement des librairies MariaDB
@@ -43,7 +41,7 @@ jobs:
         Copy-Item "C:\Program Files\MariaDB\MariaDB Connector C 64-bit\lib\libmariadb.dll" "C:\mysql_libs\"
         Copy-Item -Recurse "C:\Program Files\MariaDB\MariaDB Connector C 64-bit\include" "C:\mysql_libs\"
 
-    # 5. Compilation du Plugin QMYSQL (CORRIGÉ)
+    # 5. Compilation du Plugin QMYSQL
     - name: Compile QMYSQL Plugin
       shell: cmd
       env:
@@ -55,21 +53,19 @@ jobs:
         mkdir build-sqldrivers
         cd build-sqldrivers
         
-        :: CORRECTION : On pointe vers le dossier 'sqldrivers' (le parent), pas 'mysql' direct
-        :: Cela permet de charger les macros qt_internal_add_plugin
+        :: Configuration
         %QT_PATH%\bin\qt-cmake.bat "%SRC_PATH%\qtbase\src\plugins\sqldrivers" ^
           -G "Ninja" ^
           -DCMAKE_INSTALL_PREFIX="%QT_PATH%" ^
           -DMySQL_INCLUDE_DIR="C:\mysql_libs\include" ^
           -DMySQL_LIBRARY="C:\mysql_libs\libmariadb.lib"
         
-        :: On compile uniquement la cible qsqlmysql
+        :: Compilation
         cmake --build . --target qsqlmysql
         
-        :: L'installation va copier qsqlmysql.dll dans C:\qt\...\plugins\sqldrivers
-        cmake --install . 
-        
-        echo "Plugin MySQL compiled et installé !"
+        :: Note: On ne fait pas d'install ici pour éviter les erreurs de chemin, 
+        :: on copiera le fichier manuellement à l'étape 7.
+        echo "Plugin compiled!"
 
     # 6. Compilation de TON application
     - name: Build Application
@@ -83,11 +79,10 @@ jobs:
         mkdir build
         cd build
         
-        :: Adapte le chemin si ton .pro est dans un sous-dossier
         qmake ..\LiveBridge.pro "CONFIG+=release"
         nmake
 
-    # 7. Déploiement
+    # 7. Déploiement (CORRIGÉ : Récupération directe du plugin compilé)
     - name: Package Application
       shell: pwsh
       env:
@@ -95,16 +90,34 @@ jobs:
       run: |
         New-Item -ItemType Directory -Force -Path "ReleasePack"
         
+        # 1. Copie de l'application
         Copy-Item "build\release\LiveBridge.exe" "ReleasePack\"
+        
+        # 2. Copie de la lib MariaDB (dépendance du plugin)
         Copy-Item "C:\mysql_libs\libmariadb.dll" "ReleasePack\"
         
+        # 3. Windeployqt (Copie les DLLs Qt standards)
         $windeploy = "$env:QT_BIN\windeployqt.exe"
         & $windeploy --dir "ReleasePack" --plugindir "ReleasePack\plugins" --no-translations --compiler-runtime "ReleasePack\LiveBridge.exe"
         
-        # Vérification et copie forcée du plugin s'il a été oublié
-        if (-Not (Test-Path "ReleasePack\plugins\sqldrivers\qsqlmysql.dll")) {
-            Write-Host "Forcing manual copy of qsqlmysql.dll..."
-            Copy-Item "C:\qt\6.8.0\msvc2022_64\plugins\sqldrivers\qsqlmysql.dll" "ReleasePack\plugins\sqldrivers\"
+        # 4. COPIE MANUELLE DU PLUGIN MYSQL (La partie critique)
+        # On va le chercher directement là où il a été compilé (build-sqldrivers)
+        $pluginSrc = "build-sqldrivers\plugins\sqldrivers\qsqlmysql.dll"
+        
+        if (Test-Path $pluginSrc) {
+            Write-Host "Found compiled plugin at $pluginSrc"
+            Copy-Item $pluginSrc "ReleasePack\plugins\sqldrivers\"
+        } else {
+            Write-Host "ERROR: Compiled plugin not found at $pluginSrc"
+            # Tentative de recherche récursive si le chemin diffère légèrement
+            $found = Get-ChildItem -Path "build-sqldrivers" -Filter "qsqlmysql.dll" -Recurse | Select-Object -First 1
+            if ($found) {
+                 Write-Host "Found via search at $($found.FullName)"
+                 Copy-Item $found.FullName "ReleasePack\plugins\sqldrivers\"
+            } else {
+                 Write-Error "CRITICAL: Could not find qsqlmysql.dll anywhere in build-sqldrivers!"
+                 exit 1
+            }
         }
 
     # 8. Upload
