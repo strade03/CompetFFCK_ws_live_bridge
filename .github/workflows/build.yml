@@ -12,88 +12,109 @@ jobs:
     runs-on: windows-latest
 
     steps:
-    # 1. Récupération du code (Mise à jour v4)
+    # 1. Récupération du code
     - uses: actions/checkout@v4
 
-    # 2. Installation de Qt 6.8 (Avec les sources pour compiler le driver)
-    - name: Install Qt
-      uses: jurplel/install-qt-action@v4
+    # 2. Installation de Python (nécessaire pour aqtinstall)
+    - uses: actions/setup-python@v5
       with:
-        version: '6.8.0'
-        host: 'windows'
-        target: 'desktop'
-        arch: 'win64_msvc2022_64'
-        source: 'true'  # IMPORTANT : On veut les sources !
-        modules: 'qtwebsockets'
+        python-version: '3.x'
 
-    # 3. Téléchargement des librairies MariaDB (Compatible MySQL)
+    # 3. Installation de Qt 6.8 ET des Sources via aqtinstall (Plus robuste)
+    - name: Install Qt & Sources via aqtinstall
+      shell: pwsh
+      run: |
+        pip install aqtinstall
+        # Installe Qt 6.8.0 WebSockets
+        aqt install-qt windows desktop 6.8.0 win64_msvc2022_64 -m qtwebsockets --outputdir c:\qt
+        # Installe les sources (Vital pour compiler le plugin MySQL)
+        aqt install-src windows desktop 6.8.0 --outputdir c:\qt
+
+    # 4. Téléchargement des librairies MariaDB (Compatible MySQL)
     - name: Download MariaDB Connector C
       shell: pwsh
       run: |
-        # Lien vers une version stable du connecteur C
         $url = "https://downloads.mariadb.com/Connectors/c/connector-c-3.3.8/mariadb-connector-c-3.3.8-win64.msi"
         Invoke-WebRequest -Uri $url -OutFile mariadb.msi
-        
-        # Installation silencieuse
         Start-Process msiexec.exe -ArgumentList '/i', 'mariadb.msi', '/quiet', '/norestart' -NoNewWindow -Wait
         
-        # Préparation des dossiers pour la compilation
         New-Item -ItemType Directory -Force -Path "C:\mysql_libs"
         Copy-Item "C:\Program Files\MariaDB\MariaDB Connector C 64-bit\lib\libmariadb.lib" "C:\mysql_libs\"
         Copy-Item "C:\Program Files\MariaDB\MariaDB Connector C 64-bit\lib\libmariadb.dll" "C:\mysql_libs\"
         Copy-Item -Recurse "C:\Program Files\MariaDB\MariaDB Connector C 64-bit\include" "C:\mysql_libs\"
 
-    # 4. Compilation du Plugin QMYSQL
+    # 5. Compilation du Plugin QMYSQL
     - name: Compile QMYSQL Plugin
       shell: cmd
+      env:
+        # On définit explicitement les chemins grâce à aqtinstall (C:\qt)
+        QT_PATH: C:\qt\6.8.0\msvc2022_64
+        SRC_PATH: C:\qt\6.8.0\Src
       run: |
         call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+        
         mkdir build-plugin
         cd build-plugin
         
-        :: Configuration CMake pour le plugin SQL MySQL
-        qt-cmake "%Qt6_DIR%\..\..\Src\qtbase\src\plugins\sqldrivers\mysql" ^
-          -G Ninja ^
-          -DCMAKE_INSTALL_PREFIX="%Qt6_DIR%\..\.." ^
+        :: Configuration CMake avec les chemins explicites
+        :: Le chemin vers qt-cmake.bat est dans le dossier bin de Qt
+        %QT_PATH%\bin\qt-cmake.bat "%SRC_PATH%\qtbase\src\plugins\sqldrivers\mysql" ^
+          -G "Ninja" ^
+          -DCMAKE_INSTALL_PREFIX="%QT_PATH%" ^
           -DMySQL_INCLUDE_DIR="C:\mysql_libs\include" ^
           -DMySQL_LIBRARY="C:\mysql_libs\libmariadb.lib"
         
-        :: Compilation et installation dans le dossier Qt temporaire de la CI
+        :: Compilation et installation
         cmake --build .
         cmake --install .
+        
+        echo "Plugin compiled and installed successfully!"
 
-    # 5. Configuration et Compilation de TON application
+    # 6. Compilation de TON application
     - name: Build Application
       shell: cmd
+      env:
+        QT_PATH: C:\qt\6.8.0\msvc2022_64
       run: |
         call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+        
+        :: Ajout de Qt au PATH pour cette étape
+        set PATH=%QT_PATH%\bin;%PATH%
+        
         mkdir build
         cd build
         
-        :: Adapte le chemin si ton fichier .pro n'est pas dans le dossier racine
-        qmake ..\LiveBridge.pro CONFIG+=release
+        :: On assume que le .pro est à la racine du repo. 
+        :: Si il est dans un sous-dossier (ex: LiveBridgeCpp), mettre : qmake ..\LiveBridgeCpp\LiveBridge.pro
+        qmake ..\LiveBridge.pro "CONFIG+=release"
         nmake
 
-    # 6. Déploiement (Windeployqt + DLLs manquantes)
+    # 7. Déploiement (Windeployqt + DLLs manquantes)
     - name: Package Application
       shell: pwsh
+      env:
+        QT_BIN: C:\qt\6.8.0\msvc2022_64\bin
       run: |
         New-Item -ItemType Directory -Force -Path "ReleasePack"
         
-        # Copier l'exécutable compilé (ajuste le chemin si nécessaire)
+        # Copie de l'exécutable
         Copy-Item "build\release\LiveBridge.exe" "ReleasePack\"
         
-        # Copier la DLL MariaDB (Nécessaire pour le plugin que nous venons de compiler)
+        # Copie de la DLL MariaDB (Indispensable)
         Copy-Item "C:\mysql_libs\libmariadb.dll" "ReleasePack\"
         
-        # Utiliser l'outil Qt pour copier toutes les dépendances (Core, Gui, Network, SQL, etc.)
-        $windeployqt = Get-Command windeployqt | Select-Object -ExpandProperty Source
-        & $windeployqt --dir "ReleasePack" --plugindir "ReleasePack\plugins" --no-translations --compiler-runtime "ReleasePack\LiveBridge.exe"
+        # Windeployqt (outil magique de Qt pour copier les DLLs)
+        $windeploy = "$env:QT_BIN\windeployqt.exe"
+        & $windeploy --dir "ReleasePack" --plugindir "ReleasePack\plugins" --no-translations --compiler-runtime "ReleasePack\LiveBridge.exe"
         
-        # Vérification : s'assurer que le plugin mysql a bien été copié par windeployqt
-        # (Comme on l'a installé à l'étape 4, windeployqt devrait le trouver automatiquement)
+        # Vérification et correction si le plugin SQL n'a pas été copié automatiquement
+        # Windeployqt oublie parfois les plugins compilés manuellement
+        if (-Not (Test-Path "ReleasePack\plugins\sqldrivers\qsqlmysql.dll")) {
+            Write-Host "Manual copy of mysql plugin..."
+            Copy-Item "C:\qt\6.8.0\msvc2022_64\plugins\sqldrivers\qsqlmysql.dll" "ReleasePack\plugins\sqldrivers\"
+        }
 
-    # 7. Création de l'artefact ZIP (Mise à jour v4)
+    # 8. Création de l'artefact ZIP
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
