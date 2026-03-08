@@ -28,7 +28,8 @@ jobs:
     - name: Download MariaDB Connector C
       shell: pwsh
       run: |
-        $url = "https://downloads.mariadb.com/Connectors/c/connector-c-3.3.8/mariadb-connector-c-3.3.8-win64.msi"
+        # $url = "https://downloads.mariadb.com/Connectors/c/connector-c-3.3.8/mariadb-connector-c-3.3.8-win64.msi"
+        $url = "https://dlm.mariadb.com/3677132/Connectors/c/connector-c-3.3.8/mariadb-connector-c-3.3.8-win64.msi"
         Invoke-WebRequest -Uri $url -OutFile mariadb.msi
         Start-Process msiexec.exe -ArgumentList '/i', 'mariadb.msi', '/quiet', '/norestart' -NoNewWindow -Wait
         
